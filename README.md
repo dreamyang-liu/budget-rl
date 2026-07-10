@@ -33,6 +33,8 @@ artifacts/              下载的数据和模型（不纳入 Git）
 outputs/                训练输出（不纳入 Git）
 ```
 
+已完成的单步端到端验证结果见 [SMOKE_TEST.md](SMOKE_TEST.md)。
+
 ## 1. 前置条件
 
 需要一个可运行的 verl 环境。默认使用：
