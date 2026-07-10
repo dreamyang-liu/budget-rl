@@ -8,7 +8,8 @@
 
 - Base model: Qwen2.5-7B-Instruct
 - Starter checkpoint: `sft_interval_pct30/huggingface_e5`
-- Data: 966 train probes（483 possible + 483 impossible）
+- Data: 966 raw train probes（483 possible + 483 impossible）；其中 963 条通过
+  `max_prompt_length=8192` 过滤并实际参与训练
 - Validation: 380 probes（190 possible + 190 impossible）
 - Algorithm: GRPO, no critic
 - GPUs: 8×H200（原实验环境）；当前机器为 8×H100 80GB
@@ -35,6 +36,8 @@ outputs/                训练输出（不纳入 Git）
 
 已完成的单步端到端验证结果见 [SMOKE_TEST.md](SMOKE_TEST.md)。
 下载 checkpoint 的评测复现结果见 [EVAL_REPRO.md](EVAL_REPRO.md)。
+完整 5 epoch RL 训练和逐 epoch 评测结果见
+[RL_FULL_REPRO.md](RL_FULL_REPRO.md)。
 
 ## 1. 前置条件
 
