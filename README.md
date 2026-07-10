@@ -34,6 +34,7 @@ outputs/                训练输出（不纳入 Git）
 ```
 
 已完成的单步端到端验证结果见 [SMOKE_TEST.md](SMOKE_TEST.md)。
+下载 checkpoint 的评测复现结果见 [EVAL_REPRO.md](EVAL_REPRO.md)。
 
 ## 1. 前置条件
 
