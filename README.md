@@ -1,8 +1,8 @@
 # Budget RL Training Reproduction
 
-这个仓库用于复现 Sokoban budget estimation 的 **SFT checkpoint → GRPO** 阶段。
-它不重新生成 rollout，也不重新训练 SFT；默认从实验中表现最好的
-`sft_interval_pct30/huggingface_e5` 开始。
+这个仓库用于复现 Sokoban budget estimation 的 **rollout → data → SFT
+checkpoint → GRPO → evaluation** 代码链。默认训练入口从实验中表现最好的
+`sft_interval_pct30/huggingface_e5` 开始；原始数据和模型权重通过 S3 获取。
 
 ## 已固定的实验配置
 
@@ -25,13 +25,19 @@
 
 ```text
 reward/                 实验使用的 reward function
+third_party/verl/       实际训练使用的完整 verl 源码快照
+third_party/agent-budget-control/  Sokoban rollout 生成源码
+reference/original_budget_rl/      原始 budget-rl 脚本快照
 scripts/download_s3.sh  下载训练数据或 starter checkpoint
 scripts/preflight.py    数据、环境和 GPU 检查
 scripts/train_rl.sh     GRPO 训练入口
 scripts/merge_hf.sh     将最终 FSDP checkpoint 转为 HF 格式
+scripts/eval_checkpoint.py  standalone checkpoint evaluation
+scripts/prepare_budget_probe.py  probe dataset preparation
 tests/test_reward.py    reward 行为测试
+environment/            实际运行环境的版本记录
 artifacts/              下载的数据和模型（不纳入 Git）
-outputs/                训练输出（不纳入 Git）
+outputs/                轻量结果纳入 Git；大型 checkpoint 不纳入
 ```
 
 已完成的单步端到端验证结果见 [SMOKE_TEST.md](SMOKE_TEST.md)。
@@ -43,11 +49,18 @@ Centrality-aware reward 的单 seed ablation 见
 
 ## 1. 前置条件
 
-需要一个可运行的 verl 环境。默认使用：
+Clone 后无需另外 clone verl 或 agent-budget-control；两者的实际源码版本已
+vendor 在 `third_party/`。默认训练入口使用：
 
 ```bash
-export VERL_ROOT=/workspace/verl-x
+export VERL_ROOT="$PWD/third_party/verl"
 ```
+
+通常无需显式设置该变量。运行环境使用 Python 3.12、PyTorch 2.9、vLLM
+0.12 和 Ray 2.52.1；完整版本见
+[`environment/repro-versions.txt`](environment/repro-versions.txt)。CUDA、
+PyTorch、flash-attn 和 vLLM 仍需针对目标 GPU 正确安装，vendor 源码不会
+替代这些编译依赖。
 
 AWS CLI 需要能读取：
 
@@ -95,7 +108,7 @@ DRY_RUN=1 bash scripts/train_rl.sh
 ## 5. 启动训练
 
 ```bash
-VERL_ROOT=/workspace/verl-x bash scripts/train_rl.sh
+bash scripts/train_rl.sh
 ```
 
 训练输出默认写入：
@@ -136,6 +149,25 @@ bash scripts/merge_hf.sh
 outputs/rl_pct30e5_kl005/huggingface_final/
 ```
 
+## 7. Evaluation
+
+启动 OpenAI-compatible vLLM server 后，使用仓库内的原始评测脚本：
+
+```bash
+python3 scripts/eval_checkpoint.py \
+  --vllm-url http://localhost:8765 \
+  --model-name budget-rl \
+  --test-parquet artifacts/data/eval_test/train.parquet \
+  --output outputs/eval.json \
+  --max-tokens 512 \
+  --temperature 0 \
+  --max-concurrency 8
+```
+
+生成原始 rollout 的代码也已保留在
+`third_party/agent-budget-control/`；从已发布的 parquet 和 SFT starter
+复现 RL 时不需要重新生成 rollout。
+
 ## 已知注意事项
 
 - 原始 reward parser 会接受 `<answer>` 内夹杂文本的区间；仓库为了复现实验而保留该行为。
@@ -143,3 +175,6 @@ outputs/rl_pct30e5_kl005/huggingface_final/
 - Reward metrics 每 200 条写一次，进程退出时不足 200 条的尾部不会写入。
 - S3 中没有六组 SFT 的 e2 checkpoint，只有 e3/e5。
 - S3 中部分旧 eval JSON 的 reward 来自旧 reward 版本，训练复现应以本仓库 reward 为准。
+- GitHub 不保存 FSDP/HF 权重：三个完整实验目录本地合计约 1.38 TB，且单个
+  权重文件超过 GitHub 100 MB 限制。代码、轻量日志、per-sample eval 和下载
+  入口均已包含。

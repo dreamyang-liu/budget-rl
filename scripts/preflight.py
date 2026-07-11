@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERL_ROOT = Path(os.environ.get("VERL_ROOT", "/workspace/verl-x"))
+VERL_ROOT = Path(os.environ.get("VERL_ROOT", ROOT / "third_party/verl"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", ROOT / "artifacts/data/rl"))
 MODEL = Path(os.environ.get("MODEL", ROOT / "artifacts/models/sft_interval_pct30_e5"))
 
@@ -46,7 +46,11 @@ def main():
         checks.append(status(False, f"parquet validation failed: {exc}"))
 
     sys.path.insert(0, str(VERL_ROOT))
-    checks.append(status(importlib.util.find_spec("verl") is not None, "verl is importable"))
+    spec = importlib.util.find_spec("verl")
+    vendored_import = spec is not None and spec.origin is not None and Path(spec.origin).resolve().is_relative_to(
+        VERL_ROOT.resolve()
+    )
+    checks.append(status(vendored_import, f"vendored verl is importable from {spec.origin if spec else 'missing'}"))
 
     try:
         import torch

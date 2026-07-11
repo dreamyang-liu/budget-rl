@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERL_ROOT="${VERL_ROOT:-/workspace/verl-x}"
+VERL_ROOT="${VERL_ROOT:-${ROOT}/third_party/verl}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT}/outputs/rl_pct30e5_kl005}"
 BASE_MODEL="${MODEL:-${ROOT}/artifacts/models/sft_interval_pct30_e5}"
 TARGET_DIR="${TARGET_DIR:-${OUTPUT_DIR}/huggingface_final}"
