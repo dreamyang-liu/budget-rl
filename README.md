@@ -38,6 +38,8 @@ outputs/                训练输出（不纳入 Git）
 下载 checkpoint 的评测复现结果见 [EVAL_REPRO.md](EVAL_REPRO.md)。
 完整 5 epoch RL 训练和逐 epoch 评测结果见
 [RL_FULL_REPRO.md](RL_FULL_REPRO.md)。
+Centrality-aware reward 的单 seed ablation 见
+[CENTRALITY_ABLATION.md](CENTRALITY_ABLATION.md)。
 
 ## 1. 前置条件
 
