@@ -1,101 +1,203 @@
-# Budget RL Training Reproduction
+# Budget RL: Reproduction and Centrality-Reward Ablation
 
-这个仓库用于复现 Sokoban budget estimation 的 **rollout → data → SFT
-checkpoint → GRPO → evaluation** 代码链。默认训练入口从实验中表现最好的
-`sft_interval_pct30/huggingface_e5` 开始；原始数据和模型权重通过 S3 获取。
+This branch contains the code, pinned framework sources, experiment commands,
+logs, and per-sample evaluation outputs needed to reproduce the Budget RL
+experiments for Sokoban remaining-token estimation.
 
-## 已固定的实验配置
-
-- Base model: Qwen2.5-7B-Instruct
-- Starter checkpoint: `sft_interval_pct30/huggingface_e5`
-- Data: 966 raw train probes（483 possible + 483 impossible）；其中 963 条通过
-  `max_prompt_length=8192` 过滤并实际参与训练
-- Validation: 380 probes（190 possible + 190 impossible）
-- Algorithm: GRPO, no critic
-- GPUs: 8×H200（原实验环境）；当前机器为 8×H100 80GB
-- Train batch size: 64
-- Rollout samples: 16
-- Tensor parallel size: 4
-- Learning rate: `5e-7`
-- KL coefficient: `0.05`
-- Epochs: 5
-- Reward: strict interval coverage
-
-## 目录
+The main pipeline is:
 
 ```text
-reward/                 实验使用的 reward function
-third_party/verl/       实际训练使用的完整 verl 源码快照
-third_party/agent-budget-control/  Sokoban rollout 生成源码
-reference/original_budget_rl/      原始 budget-rl 脚本快照
-scripts/download_s3.sh  下载训练数据或 starter checkpoint
-scripts/preflight.py    数据、环境和 GPU 检查
-scripts/train_rl.sh     GRPO 训练入口
-scripts/merge_hf.sh     将最终 FSDP checkpoint 转为 HF 格式
-scripts/eval_checkpoint.py  standalone checkpoint evaluation
-scripts/prepare_budget_probe.py  probe dataset preparation
-tests/test_reward.py    reward 行为测试
-environment/            实际运行环境的版本记录
-artifacts/              下载的数据和模型（不纳入 Git）
-outputs/                轻量结果纳入 Git；大型 checkpoint 不纳入
+Sokoban rollout
+  -> budget-probe dataset
+  -> pct30 SFT checkpoint
+  -> 5-epoch GRPO training
+  -> Hugging Face checkpoint merge
+  -> held-out evaluation
 ```
 
-已完成的单步端到端验证结果见 [SMOKE_TEST.md](SMOKE_TEST.md)。
-下载 checkpoint 的评测复现结果见 [EVAL_REPRO.md](EVAL_REPRO.md)。
-完整 5 epoch RL 训练和逐 epoch 评测结果见
-[RL_FULL_REPRO.md](RL_FULL_REPRO.md)。
-Centrality-aware reward 的单 seed ablation 见
-[CENTRALITY_ABLATION.md](CENTRALITY_ABLATION.md)。
+The repository also contains the reviewer-requested reward ablation that adds a
+midpoint-centrality penalty to the original interval reward.
 
-## 1. 前置条件
+## Main results
 
-Clone 后无需另外 clone verl 或 agent-budget-control；两者的实际源码版本已
-vendor 在 `third_party/`。默认训练入口使用：
+All rows below use seed 42 and the same 380-example held-out test set (190
+possible and 190 impossible examples).
+
+| Model | Classification accuracy | Possible recall | Impossible recall | Coverage | Median MRE | Mean MRE | Original reward |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Reproduced SFT starter | 91.05% | 95.26% | 86.84% | 37.37% | 53.90% | 63.16% | 0.20995 |
+| Original RL reward | 90.00% | 91.58% | 88.42% | 45.79% | 30.41% | 56.29% | 0.26183 |
+| Centrality reward, lambda=1.0 | 90.00% | 92.63% | 87.37% | 46.32% | 31.42% | **47.26%** | 0.25712 |
+| Centrality reward, lambda=0.5 | 90.00% | 92.63% | 87.37% | 44.74% | 35.95% | 50.10% | 0.25271 |
+
+The original 5-epoch RL result is closely reproduced: the archived final reward
+is 0.26371 and this run obtains 0.26183. Classification accuracy is exactly the
+same (90.00%), and coverage differs by 1.05 percentage points.
+
+For the centrality ablation, `lambda=1.0` is the more promising variant. It
+preserves classification accuracy, slightly improves coverage, reduces mean MRE
+by 9.03 percentage points, and reduces mean relative interval width from 60.05%
+to 52.03%. It does not improve median MRE, so this single-seed experiment does
+not support a claim that every measure of centrality improves.
+
+Detailed reports:
+
+- [Full 5-epoch RL reproduction](RL_FULL_REPRO.md)
+- [Centrality-aware reward ablation](CENTRALITY_ABLATION.md)
+- [SFT checkpoint evaluation reproduction](EVAL_REPRO.md)
+- [One-step end-to-end smoke test](SMOKE_TEST.md)
+
+## Reward definitions
+
+Let the true remaining token budget be `y`, the predicted interval be `[L,H]`,
+its width be `w = H-L`, and its midpoint be `m = (L+H)/2`.
+
+### Original reward
+
+For a possible example:
+
+```text
+R_original = 1.8 * I[L <= y <= H] * max(0, 1 - w/y)
+```
+
+For an impossible example, a correct `impossible` prediction receives 0.2.
+Invalid formats, scalar predictions, incorrect feasibility predictions, and
+uncovered intervals receive zero.
+
+The original reward scores intervals only by coverage and width. Two covered
+intervals with the same width receive the same reward even if one midpoint is
+closer to the true value.
+
+### Centrality-aware reward
+
+The ablation adds midpoint relative error:
+
+```text
+R_lambda = 1.8 * I[L <= y <= H]
+           * max(0, 1 - w/y - lambda * abs(m-y)/y)
+```
+
+`lambda=0` is exactly the original reward. The main centrality experiment uses
+`lambda=1.0`; `lambda=0.5` is a sensitivity run. The impossible-label and format
+rules remain unchanged.
+
+The implementation is in
+[`reward/budget_probe_reward.py`](reward/budget_probe_reward.py), controlled by
+the `CENTRALITY_LAMBDA` environment variable.
+
+## Repository contents
+
+```text
+reward/
+  budget_probe_reward.py        Original + parameterized centrality reward
+
+scripts/
+  download_s3.sh                Download prepared data and SFT starter
+  preflight.py                  Validate data, model, CUDA, and vendored verl
+  train_rl.sh                   GRPO training entry point
+  merge_hf.sh                   Merge FSDP shards into an HF checkpoint
+  eval_checkpoint.py            Standalone held-out evaluation
+  analyze_eval.py               Evaluation report formatter
+  prepare_budget_probe.py       Build SFT/RL budget-probe datasets
+  convert_estimation_dialogues.py
+
+third_party/verl/               Exact verl source used by the H100 runs
+third_party/agent-budget-control/
+                                Sokoban rollout-generation source
+reference/original_budget_rl/   Exact original budget-rl source snapshot
+environment/repro-versions.txt  Versions in the successful environment
+outputs/                        Lightweight logs and per-sample results
+```
+
+The branch vendors source snapshots instead of Git submodules. A normal clone
+therefore contains the complete code path without additional repository clones.
+
+## Pinned source versions
+
+| Component | Commit |
+|---|---|
+| `dreamyang-liu/budget-rl` original source | `1d2ebfb5a9cc83a931d0293cffc83f3bb38dbd33` |
+| Active `verl-project/verl` | `b9d71f9a84ef89ec7f5a946cd277b35165a3daae` |
+| `EarthRecovery/agent-budget-control` | `23826211b7415260e4a27169f3befb1c496499a0` |
+| agent-budget-control's historical verl submodule | `d62da4950573d7a4b7ef2362337952e7ab59e78d` |
+
+See [PROVENANCE.md](PROVENANCE.md) for artifact and configuration provenance.
+
+## Hardware and software
+
+The archived experiment used 8 H200 GPUs. The reproduction and centrality runs
+in this branch used 8 H100 80 GB GPUs.
+
+Important runtime versions:
+
+```text
+Python          3.12
+PyTorch         2.9.0+cu129
+flash-attn      2.8.1
+vLLM            0.12.0
+Ray             2.52.1
+Transformers    4.57.3
+Datasets        4.4.2
+Hydra           1.3.2
+```
+
+The complete audit list is in
+[`environment/repro-versions.txt`](environment/repro-versions.txt). Vendoring
+the Python source does not replace platform-specific CUDA, PyTorch, flash-attn,
+or vLLM installations.
+
+## Quick reproduction
+
+### 1. Clone the rebuttal branch
 
 ```bash
-export VERL_ROOT="$PWD/third_party/verl"
+git clone --branch rebuttal --single-branch \
+  https://github.com/dreamyang-liu/budget-rl.git
+cd budget-rl
 ```
 
-通常无需显式设置该变量。运行环境使用 Python 3.12、PyTorch 2.9、vLLM
-0.12 和 Ray 2.52.1；完整版本见
-[`environment/repro-versions.txt`](environment/repro-versions.txt)。CUDA、
-PyTorch、flash-attn 和 vLLM 仍需针对目标 GPU 正确安装，vendor 源码不会
-替代这些编译依赖。
+No separate verl or agent-budget-control clone is required. Training scripts
+default to `third_party/verl`. `VERL_ROOT` may be set to override it.
 
-AWS CLI 需要能读取：
+### 2. Configure AWS access
+
+The prepared data and SFT starter are stored at:
 
 ```text
 s3://drmyang-training-data-241580540779-us-east-2-an/agent-budget-control-ckpt/
 ```
 
-## 2. 下载数据
+Verify access:
 
 ```bash
-bash scripts/download_s3.sh data
+aws sts get-caller-identity
 ```
 
-约下载 2 MB，包括：
-
-- `artifacts/data/rl/train.parquet`
-- `artifacts/data/rl/test.parquet`
-- `artifacts/data/eval_test/train.parquet`
-- trajectory split manifests
-
-## 3. 下载 SFT starter checkpoint
+### 3. Download data and the SFT starter
 
 ```bash
-bash scripts/download_s3.sh starter
+bash scripts/download_s3.sh all
 ```
 
-这一步约下载 14.2 GiB。
+This downloads:
 
-也可以使用已经存在的本地 checkpoint：
-
-```bash
-export MODEL=/path/to/huggingface_checkpoint
+```text
+artifacts/data/rl/train.parquet
+artifacts/data/rl/test.parquet
+artifacts/data/eval_test/train.parquet
+artifacts/data/splits/
+artifacts/models/sft_interval_pct30_e5/
 ```
 
-## 4. 预检
+The prepared data are small; the SFT starter is approximately 14.2 GiB.
+
+Data statistics:
+
+- 966 raw RL training probes: 483 possible and 483 impossible;
+- 963 probes remain after the 8,192-token prompt filter;
+- 380 held-out probes: 190 possible and 190 impossible.
+
+### 4. Run preflight checks
 
 ```bash
 python3 scripts/preflight.py
@@ -103,78 +205,173 @@ python3 -m unittest discover -s tests -v
 DRY_RUN=1 bash scripts/train_rl.sh
 ```
 
-预检会检查 parquet schema、类别平衡、trajectory split、verl import、CUDA 和 GPU 数量。
+Preflight checks the parquet schema, class balance, model shard index, CUDA
+visibility, and that Python imports verl from this repository.
 
-## 5. 启动训练
+### 5. Reproduce the original 5-epoch RL run
 
-```bash
-bash scripts/train_rl.sh
-```
-
-训练输出默认写入：
-
-```text
-outputs/rl_pct30e5_kl005/
-```
-
-所有关键参数都可以通过环境变量修改，例如做小规模 smoke run：
+The H100-stable configuration is:
 
 ```bash
-NGPUS=2 \
-TP_SIZE=1 \
-TRAIN_BATCH_SIZE=8 \
-PPO_MINI_BATCH_SIZE=8 \
-PPO_MICRO_BATCH_SIZE=1 \
-ROLLOUT_N=2 \
-TOTAL_EPOCHS=1 \
-SAVE_FREQ=1 \
-bash scripts/train_rl.sh trainer.total_training_steps=1
+CENTRALITY_LAMBDA=0 \
+SEED=42 \
+EXPERIMENT_NAME=rl_pct30e5_kl005_full \
+OUTPUT_DIR="$PWD/outputs/rl_pct30e5_kl005_full" \
+NGPUS=8 \
+NNODES=1 \
+TP_SIZE=4 \
+TRAIN_BATCH_SIZE=64 \
+PPO_MINI_BATCH_SIZE=64 \
+PPO_MICRO_BATCH_SIZE=2 \
+ROLLOUT_N=16 \
+LR=5e-7 \
+KL_COEF=0.05 \
+TOTAL_EPOCHS=5 \
+SAVE_FREQ=15 \
+TEST_FREQ=-1 \
+RESUME_MODE=disable \
+ROLLOUT_GPU_MEMORY_UTILIZATION=0.3 \
+bash scripts/train_rl.sh trainer.val_before_train=False
 ```
 
-这个 smoke 配置只用于验证流水线，不等价于原实验。
+This produces 75 optimizer steps, 15 per epoch, and saves checkpoints at steps
+15, 30, 45, 60, and 75. The measured wall time was 2:12:54.
 
-当前机器的 H100 显存小于原实验的 H200。如果发生 OOM，优先降低
-`PPO_MICRO_BATCH_SIZE` 和 `actor_rollout_ref.rollout.gpu_memory_utilization`，
-不要先改变 batch size、rollout N 或 KL 等影响实验定义的参数。
+The archived H200 recipe used PPO micro-batch 4 and vLLM memory utilization
+0.4. That combination OOMed on H100 80 GB while vLLM remapped weights after the
+first update. Micro-batch 2 and utilization 0.3 leave the effective train batch,
+rollout count, optimizer, reward, and number of updates unchanged.
 
-## 6. 转换最终 checkpoint
+### 6. Run the centrality ablations
+
+For `lambda=1.0`:
 
 ```bash
+CENTRALITY_LAMBDA=1.0 \
+SEED=42 \
+EXPERIMENT_NAME=rl_pct30e5_kl005_central_lam1_seed42 \
+OUTPUT_DIR="$PWD/outputs/rl_pct30e5_kl005_central_lam1_seed42" \
+NGPUS=8 TP_SIZE=4 \
+TRAIN_BATCH_SIZE=64 PPO_MINI_BATCH_SIZE=64 PPO_MICRO_BATCH_SIZE=2 \
+ROLLOUT_N=16 LR=5e-7 KL_COEF=0.05 TOTAL_EPOCHS=5 \
+SAVE_FREQ=15 TEST_FREQ=-1 RESUME_MODE=disable \
+ROLLOUT_GPU_MEMORY_UTILIZATION=0.3 \
+bash scripts/train_rl.sh trainer.val_before_train=False
+```
+
+For `lambda=0.5`, change `CENTRALITY_LAMBDA`, `EXPERIMENT_NAME`, and
+`OUTPUT_DIR`:
+
+```bash
+CENTRALITY_LAMBDA=0.5 \
+SEED=42 \
+EXPERIMENT_NAME=rl_pct30e5_kl005_central_lam05_seed42 \
+OUTPUT_DIR="$PWD/outputs/rl_pct30e5_kl005_central_lam05_seed42" \
+NGPUS=8 TP_SIZE=4 \
+TRAIN_BATCH_SIZE=64 PPO_MINI_BATCH_SIZE=64 PPO_MICRO_BATCH_SIZE=2 \
+ROLLOUT_N=16 LR=5e-7 KL_COEF=0.05 TOTAL_EPOCHS=5 \
+SAVE_FREQ=15 TEST_FREQ=-1 RESUME_MODE=disable \
+ROLLOUT_GPU_MEMORY_UTILIZATION=0.3 \
+bash scripts/train_rl.sh trainer.val_before_train=False
+```
+
+Each centrality run took approximately 2 hours 13 minutes on 8 H100 GPUs.
+
+### 7. Merge an FSDP checkpoint
+
+`merge_hf.sh` reads `latest_checkpointed_iteration.txt` and merges the latest
+actor checkpoint:
+
+```bash
+OUTPUT_DIR="$PWD/outputs/rl_pct30e5_kl005_central_lam1_seed42" \
+TARGET_DIR="$PWD/outputs/rl_pct30e5_kl005_central_lam1_seed42/huggingface_final" \
 bash scripts/merge_hf.sh
 ```
 
-默认读取最新的 `outputs/rl_pct30e5_kl005/global_step_*`，输出到：
+The merged 24B checkpoint is approximately 15 GB in four safetensor shards.
 
-```text
-outputs/rl_pct30e5_kl005/huggingface_final/
+### 8. Evaluate a merged checkpoint
+
+Start a vLLM OpenAI-compatible server:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -m vllm.entrypoints.openai.api_server \
+  --model outputs/rl_pct30e5_kl005_central_lam1_seed42/huggingface_final \
+  --served-model-name central-lam1 \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --dtype bfloat16 \
+  --max-model-len 16384 \
+  --gpu-memory-utilization 0.6
 ```
 
-## 7. Evaluation
-
-启动 OpenAI-compatible vLLM server 后，使用仓库内的原始评测脚本：
+In another shell:
 
 ```bash
 python3 scripts/eval_checkpoint.py \
-  --vllm-url http://localhost:8765 \
-  --model-name budget-rl \
+  --vllm-url http://127.0.0.1:8765 \
+  --model-name central-lam1 \
   --test-parquet artifacts/data/eval_test/train.parquet \
-  --output outputs/eval.json \
+  --output outputs/rl_pct30e5_kl005_central_lam1_seed42/eval.json \
   --max-tokens 512 \
   --temperature 0 \
   --max-concurrency 8
 ```
 
-生成原始 rollout 的代码也已保留在
-`third_party/agent-budget-control/`；从已发布的 parquet 和 SFT starter
-复现 RL 时不需要重新生成 rollout。
+Every reported evaluation contains 380 responses, has a 100% format-valid
+rate, and contains no failed API requests.
 
-## 已知注意事项
+## Rebuilding the prepared dataset
 
-- 原始 reward parser 会接受 `<answer>` 内夹杂文本的区间；仓库为了复现实验而保留该行为。
-- Scalar prediction 在 possible 样本上奖励为 0。
-- Reward metrics 每 200 条写一次，进程退出时不足 200 条的尾部不会写入。
-- S3 中没有六组 SFT 的 e2 checkpoint，只有 e3/e5。
-- S3 中部分旧 eval JSON 的 reward 来自旧 reward 版本，训练复现应以本仓库 reward 为准。
-- GitHub 不保存 FSDP/HF 权重：三个完整实验目录本地合计约 1.38 TB，且单个
-  权重文件超过 GitHub 100 MB 限制。代码、轻量日志、per-sample eval 和下载
-  入口均已包含。
+The published S3 parquet files are sufficient to reproduce RL training. To
+rebuild them from rollout dialogues, use:
+
+```text
+third_party/agent-budget-control/       generate Sokoban dialogues
+scripts/convert_estimation_dialogues.py convert dialogues to JSONL
+scripts/prepare_budget_probe.py         split and emit SFT/RL parquet
+```
+
+The exact original scripts and their historical verl snapshot are retained in
+`reference/original_budget_rl/`. The active RL runs use the newer vendored
+`third_party/verl/` snapshot documented above.
+
+## Evaluation details and caveats
+
+- `coverage` in `eval_checkpoint.py` uses all 190 possible-ground-truth
+  examples as its denominator. The archived prose description instead suggests
+  conditioning on numeric interval predictions; those are different metrics.
+- MRE is computed on possible examples with numeric interval predictions.
+  Median MRE is robust to outliers; mean MRE can be dominated by a small number
+  of large relative errors.
+- Concurrent greedy vLLM decoding is not perfectly bit-deterministic across
+  repeated runs. The SFT reproduction changed a small number of predictions
+  between runs while preserving the headline metrics.
+- The centrality comparison currently has one training seed per reward. Small
+  differences in coverage and median MRE should not be treated as conclusive
+  without additional seeds or repeated inference.
+- The parser intentionally preserves original behavior, including accepting an
+  interval embedded inside other text within `<answer>...</answer>`.
+- Scalar predictions receive zero reward on possible examples.
+
+## Tracked and external artifacts
+
+Git tracks:
+
+- all source code required by this pipeline;
+- pinned third-party source snapshots;
+- training and evaluation logs;
+- reward batch metrics;
+- per-sample evaluation JSON;
+- checkpoint iteration manifests.
+
+Git does not track:
+
+- the 14.2 GiB SFT starter;
+- raw FSDP checkpoints (about 86 GB per epoch);
+- merged Hugging Face weights (about 15 GB per model);
+- the approximately 1.38 TB of local model artifacts from all three full runs.
+
+Those files exceed GitHub's 100 MB per-file limit and are obtained from S3 or
+regenerated locally. See [`outputs/README.md`](outputs/README.md) for the exact
+lightweight outputs committed to this branch.
