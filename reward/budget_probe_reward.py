@@ -1,4 +1,4 @@
-"""Strict interval-coverage reward used by the budget RL experiment."""
+"""Interval reward with an optional midpoint-centrality penalty."""
 
 import json
 import os
@@ -13,6 +13,7 @@ POSSIBLE_WEIGHT = 1.8
 IMPOSSIBLE_WEIGHT = 0.2
 FORMAT_REWARD = 0.0
 COVERAGE_SCALE = 1.0
+CENTRALITY_LAMBDA = float(os.environ.get("CENTRALITY_LAMBDA", "0"))
 
 _log_file = None
 _log_lock = threading.Lock()
@@ -84,6 +85,7 @@ def _flush_batch():
         "width_median": safe_median(widths),
         "mre_mean": safe_mean(mres),
         "mre_median": safe_median(mres),
+        "centrality_lambda": CENTRALITY_LAMBDA,
     }
     _ensure_log()
     with _log_lock:
@@ -147,7 +149,9 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
         if remaining_tokens == 0:
             accuracy = 1.0 if (est_low == 0 and est_high == 0) else 0.0
         elif est_low <= remaining_tokens <= est_high:
-            accuracy = max(0.0, 1.0 - (est_high - est_low) / remaining_tokens)
+            relative_width = (est_high - est_low) / remaining_tokens
+            centrality_penalty = CENTRALITY_LAMBDA * sample_info["rel_error"]
+            accuracy = max(0.0, 1.0 - relative_width - centrality_penalty)
             sample_info["covered"] = True
         else:
             accuracy = 0.0

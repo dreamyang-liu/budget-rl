@@ -21,6 +21,10 @@ TOTAL_EPOCHS="${TOTAL_EPOCHS:-5}"
 SAVE_FREQ="${SAVE_FREQ:-10}"
 TEST_FREQ="${TEST_FREQ:-5}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-rl_pct30e5_kl005_repro}"
+CENTRALITY_LAMBDA="${CENTRALITY_LAMBDA:-0}"
+SEED="${SEED:-42}"
+ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.4}"
+ROLLOUT_MAX_MODEL_LEN="${ROLLOUT_MAX_MODEL_LEN:-8192}"
 
 for path in "${VERL_ROOT}/verl" "${DATA_DIR}/train.parquet" "${DATA_DIR}/test.parquet" \
             "${MODEL}/config.json" "${REWARD_FN}"; do
@@ -31,6 +35,7 @@ mkdir -p "${OUTPUT_DIR}"
 export PYTHONPATH="${VERL_ROOT}:${PYTHONPATH:-}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-9.0}"
 export REWARD_METRICS_LOG="${REWARD_METRICS_LOG:-${OUTPUT_DIR}/reward_metrics.jsonl}"
+export CENTRALITY_LAMBDA
 
 if test "${DRY_RUN:-0}" = "1"; then
   set -- "$@" --cfg job
@@ -43,6 +48,7 @@ python3 -m verl.trainer.main_ppo \
   data.train_files="${DATA_DIR}/train.parquet" \
   data.val_files="${DATA_DIR}/test.parquet" \
   data.train_batch_size="${TRAIN_BATCH_SIZE}" \
+  data.seed="${SEED}" \
   data.max_prompt_length=8192 \
   data.max_response_length=1024 \
   data.filter_overlong_prompts=True \
@@ -51,6 +57,8 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.model.use_remove_padding=True \
   actor_rollout_ref.model.enable_gradient_checkpointing=True \
   actor_rollout_ref.actor.optim.lr="${LR}" \
+  actor_rollout_ref.actor.data_loader_seed="${SEED}" \
+  actor_rollout_ref.actor.fsdp_config.seed="${SEED}" \
   actor_rollout_ref.actor.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}" \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
   actor_rollout_ref.actor.use_kl_loss=True \
@@ -62,10 +70,11 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.n="${ROLLOUT_N}" \
   actor_rollout_ref.rollout.tensor_model_parallel_size="${TP_SIZE}" \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
-  actor_rollout_ref.rollout.max_model_len=8192 \
+  actor_rollout_ref.rollout.gpu_memory_utilization="${ROLLOUT_GPU_MEMORY_UTILIZATION}" \
+  actor_rollout_ref.rollout.max_model_len="${ROLLOUT_MAX_MODEL_LEN}" \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
+  actor_rollout_ref.ref.fsdp_config.seed="${SEED}" \
   actor_rollout_ref.ref.fsdp_config.param_offload=True \
   reward.custom_reward_function.path="${REWARD_FN}" \
   reward.custom_reward_function.name=compute_score \
